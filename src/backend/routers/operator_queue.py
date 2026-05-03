@@ -28,6 +28,18 @@ def set_websocket_manager(manager):
     _websocket_manager = manager
 
 
+def _ensure_agent_access(current_user: User, agent_name: str) -> None:
+    """Ensure the current user can access queue items for an agent."""
+    if current_user.role == "admin":
+        return
+
+    if not db.get_agent_owner(agent_name):
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not db.can_user_access_agent(current_user.username, agent_name):
+        raise HTTPException(status_code=403, detail="Access denied to agent")
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -54,6 +66,15 @@ async def list_queue_items(
     current_user: User = Depends(get_current_user),
 ):
     """List operator queue items with optional filters."""
+    if not agent_name and current_user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access required when querying all agents"
+        )
+
+    if agent_name:
+        _ensure_agent_access(current_user, agent_name)
+
     items = db.list_operator_queue_items(
         status=status,
         type=type,
@@ -71,6 +92,8 @@ async def get_queue_stats(
     current_user: User = Depends(get_current_user),
 ):
     """Get queue statistics (counts by status, type, priority, agent)."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
     return db.get_operator_queue_stats()
 
 
@@ -83,6 +106,8 @@ async def get_queue_item(
     item = db.get_operator_queue_item(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Queue item not found")
+
+    _ensure_agent_access(current_user, item["agent_name"])
     return item
 
 
@@ -97,6 +122,8 @@ async def respond_to_queue_item(
     existing = db.get_operator_queue_item(item_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Queue item not found")
+
+    _ensure_agent_access(current_user, existing["agent_name"])
 
     if existing["status"] != "pending":
         raise HTTPException(
@@ -137,6 +164,8 @@ async def cancel_queue_item(
     if not existing:
         raise HTTPException(status_code=404, detail="Queue item not found")
 
+    _ensure_agent_access(current_user, existing["agent_name"])
+
     if existing["status"] != "pending":
         raise HTTPException(
             status_code=400,
@@ -155,6 +184,8 @@ async def get_agent_queue_items(
     current_user: User = Depends(get_current_user),
 ):
     """Get queue items for a specific agent."""
+    _ensure_agent_access(current_user, agent_name)
+
     items = db.list_operator_queue_items(
         agent_name=agent_name,
         status=status,
